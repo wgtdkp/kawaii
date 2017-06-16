@@ -1,3 +1,3 @@
 # kawaii
 
-A kawaii _scheme_ interpreter in _C_.
+A kawaii _Scheme_ interpreter in _C_.
