@@ -12,8 +12,12 @@
 #include <string.h>
 #include <strings.h>
 
-#define ENV_INIT_SIZE (16)
+#define caar(list)  (car(car(list)))
+#define cadr(list)  (car(cdr(list)))
+#define cddr(list)  (cdr(cdr(list)))
+#define caddr(list) (car(cdr(cdr(list))))
 
+#define ENV_INIT_SIZE (16)
 #define STRING(cstr) (string_t){cstr, sizeof(cstr) - 1}
 
 typedef struct string {
@@ -26,9 +30,24 @@ static inline bool string_eq(string_t lhs, string_t rhs) {
 }
 
 typedef enum type {
-  EMPTY, INT, LIST, SYMB, FUNC,
-  ATOM_ADD, ATOM_SUB, ATOM_MUL, ATOM_DIV, ATOM_DEF, ATOM_LAMBDA,
-  // Add atom functions below
+  EMPTY, INT, BOOL, /*CELL,*/ LIST, /*QUOTED,*/ SYMB, FUNC,
+  PRIM_ADD, // '+'
+  PRIM_SUB, // '-'
+  PRIM_MUL, // '*'
+  PRIM_DIV, // '/'
+  PRIM_EQ, // '='
+  PRIM_GT, // '>'
+  PRIM_LT, // '<'
+  PRIM_LE, // '<='
+  PRIM_GE, // '>='
+  PRIM_NE, // '!=' (extension)
+  PRIM_NOT, // 'not'
+  PRIM_IF,  // 'if'
+  PRIM_DEF, // 'define'
+  PRIM_LAMBDA, // 'lambda'
+  //PRIM_LIST,
+  //PRIM_CONS,
+  // Add prim functions below
   NUM_TYPE
 } type_t;
 
@@ -37,6 +56,9 @@ typedef struct value {
   union {
     // Interger
     int64_t as_int;
+
+    // Bool
+    bool as_bool;
 
     // Function
     struct {
@@ -54,7 +76,7 @@ typedef struct value {
   type_t t;
 } value_t;
 
-static value_t* alloc_value(type_t t) {
+static inline value_t* alloc_value(type_t t) {
   value_t* ret = calloc(1, sizeof(value_t));
   ret->t = t;
   return ret;
@@ -92,6 +114,12 @@ static inline value_t* make_int(int64_t v) {
   return ret;
 }
 
+static inline value_t* make_bool(bool v) {
+  value_t* ret = alloc_value(BOOL);
+  ret->as_bool = v;
+  return ret;
+}
+
 static inline value_t* make_func(list_t* params, list_t* body) {
   value_t* ret = alloc_value(FUNC);
   ret->as_func.params = params;
@@ -112,10 +140,10 @@ static inline value_t* make_list(list_t* list) {
   return ret;
 }
 
-static value_t* make_atom(type_t atom) {
-  static value_t* atoms[NUM_TYPE - ATOM_ADD] = {NULL};
-  value_t** ret = &atoms[atom - ATOM_ADD];
-  return *ret ? *ret : (*ret = alloc_value(atom));
+static inline value_t* make_atom(type_t prim) {
+  static value_t* atoms[NUM_TYPE - PRIM_ADD] = {NULL};
+  value_t** ret = &atoms[prim - PRIM_ADD];
+  return *ret ? *ret : (*ret = alloc_value(prim));
 }
 
 typedef struct env_entry {
@@ -132,7 +160,8 @@ typedef struct env {
   struct env* parent;
 } env_t;
 
-static env_entry_t* alloc_env_entry(uint64_t h, string_t key, value_t* val) {
+static inline env_entry_t* alloc_env_entry(uint64_t h,
+    string_t key, value_t* val) {
   env_entry_t* ret = malloc(sizeof(env_entry_t));
   ret->key_hash = h;
   ret->key = key;
@@ -141,9 +170,9 @@ static env_entry_t* alloc_env_entry(uint64_t h, string_t key, value_t* val) {
   return ret;
 }
 
-static void free_env_entry(env_entry_t* entry) { free(entry); }
+static inline void free_env_entry(env_entry_t* entry) { free(entry); }
 
-static env_t* alloc_env(env_t* papa, uint32_t size) {
+static inline env_t* alloc_env(env_t* papa, uint32_t size) {
   env_t* ret = malloc(sizeof(env_t));
   ret->size = size;
   ret->num_entries = 0;
@@ -152,7 +181,7 @@ static env_t* alloc_env(env_t* papa, uint32_t size) {
   return ret;
 }
 
-static void free_env(env_t* env) {
+static inline void free_env(env_t* env) {
   for (int i = 0; i < env->size; ++i) {
     env_entry_t* entry = env->slots[i];
     while (entry) {
@@ -196,7 +225,7 @@ static void env_add(env_t* env, string_t key, value_t* val) {
   ++env->num_entries;
 }
 
-static value_t* env_lookup(env_t* env, string_t key) {
+static inline value_t* env_lookup(env_t* env, string_t key) {
   uint64_t h = hash(key);
   env_entry_t* entry = env->slots[h % env->size];
   while (entry) {
@@ -286,7 +315,7 @@ static inline string_t read_symb() {
 /* Deciding if a sumbol is a number
  * (\+|\-)[0-9]+
  */
-static bool is_number(string_t symb) {
+static inline bool is_number(string_t symb) {
   for (int i = 0; i < symb.len; ++i) {
     int c = symb.begin[i];
     if (i == 0 && symb.len > 1 && (c == '+' || c == '-')) {
@@ -330,14 +359,15 @@ static inline void bind(string_t symb, value_t* val) {
   env_add(cur_env, symb, val);
 }
 static list_t* eval_each(list_t* list) {
-  return !list ? NULL : alloc_list(eval(car(list)), eval_each(cdr(list)));
+  if (!list) return NULL;
+  value_t* val = eval(car(list));
+  return alloc_list(val, eval_each(cdr(list)));
 }
 
 static value_t* apply(value_t* func, list_t* args) {
   assert(func->t == FUNC);
   env_t* backup_env = cur_env;
-  env_t* new_env = alloc_env(backup_env, ENV_INIT_SIZE);
-  cur_env = new_env;
+  cur_env = alloc_env(backup_env, ENV_INIT_SIZE);
 
   list_t* params = func->as_func.params;
   while (params && args) {
@@ -359,7 +389,7 @@ static value_t* apply(value_t* func, list_t* args) {
   return ans;
 }
 
-static value_t* atom_add(list_t* args) {
+static inline value_t* prim_add(list_t* args) {
   int64_t res = 0;
   while (args) {
     exit_on(car(args)->t != INT, "argument type unmatched");
@@ -369,7 +399,7 @@ static value_t* atom_add(list_t* args) {
   return make_int(res);
 }
 
-static value_t* atom_sub(list_t* args) {
+static inline value_t* prim_sub(list_t* args) {
   int64_t res = 0;
   if (args && cdr(args)) {
     res = car(args)->as_int;
@@ -383,7 +413,7 @@ static value_t* atom_sub(list_t* args) {
   return make_int(res);
 }
 
-static value_t* atom_mul(list_t* args) {
+static inline value_t* prim_mul(list_t* args) {
   int64_t res = 1;
   while (args) {
     exit_on(car(args)->t != INT, "argument type unmatched");
@@ -393,7 +423,7 @@ static value_t* atom_mul(list_t* args) {
   return make_int(res);
 }
 
-static value_t* atom_div(list_t* args) {
+static inline value_t* prim_div(list_t* args) {
   exit_on(!args, "div needs at least one arguments");
   exit_on(car(args)->t != INT, "argument type unmatched");
   int64_t res = car(args)->as_int;
@@ -413,11 +443,11 @@ static inline bool is_lambda(list_t* list) {
 
 // (define <symbol> <expression>)
 // (define (<symbol> <paramters>) <expressions>)
-static value_t* atom_def(list_t* list) {
+static value_t* prim_def(list_t* list) {
   exit_on(!cdr(list), "expect expression(s)");
   if (car(list)->t == SYMB) {
     string_t name = car(list)->as_symb;
-    value_t* expr = car(cdr(list));
+    value_t* expr = cadr(list);
     if (expr->t == LIST && is_lambda(expr->as_list)) {
       expr = eval(expr);
     }
@@ -437,14 +467,53 @@ static value_t* atom_def(list_t* list) {
 }
 
 // (lambda (<params>) <value-list>)
-static value_t* atom_lambda(list_t* args) {
-  exit_on(car(args)->t != LIST && car(args)->t != EMPTY, "expect parameter list");
-  exit_on(!cdr(args), "expect expression");
-  list_t* params = car(args)->as_list;
-  return make_func(params, cdr(args));
+static inline value_t* prim_lambda(list_t* list) {
+  exit_on(car(list)->t != LIST && car(list)->t != EMPTY,
+          "expect parameter list");
+  exit_on(!cdr(list), "expect expression");
+  list_t* params = car(list)->as_list;
+  return make_func(params, cdr(list));
 }
 
-static value_t* lookup(string_t symb) {
+// =, >, <, >=, <= and extensional '!='
+static inline value_t* prim_rel(type_t op, list_t* list) {
+  exit_on(!list || !cdr(list), "expect two operands");
+  // Support only integer!
+  exit_on(car(list)->t != INT || cadr(list)->t != INT, "expect number");
+  int64_t lhs = car(list)->as_int, rhs = cadr(list)->as_int;
+  switch (op) {
+  case PRIM_EQ: return make_bool(lhs == rhs);
+  case PRIM_GT: return make_bool(lhs > rhs);
+  case PRIM_LT: return make_bool(lhs < rhs);
+  case PRIM_LE: return make_bool(lhs <= rhs);
+  case PRIM_GE: return make_bool(lhs >= rhs);
+  case PRIM_NE: return make_bool(lhs != rhs);
+  default: assert(false); return NULL;
+  }
+}
+
+static inline value_t* prim_not(list_t* list) {
+  exit_on(!list || car(list)->t != BOOL, "expect bool expression");
+  return make_bool(!car(list)->as_bool);
+}
+
+// (if <cond> <consequent> <alternate>)
+// (if <cond> <consequent>)
+static inline value_t* prim_if(list_t* list) {
+  exit_on(!list || !cdr(list), "expect expression");
+  value_t* cond = eval(car(list));
+  exit_on(cond->t != BOOL, "expect bool expression");
+  // TODO(wgtdkp): syntax checking, ensure there is at most too branches
+  if (cond->as_bool) {
+    return eval(cadr(list));
+  } else if (cddr(list)) {
+    return eval(caddr(list));
+  } else {
+    return make_empty();
+  }
+}
+
+static inline value_t* lookup(string_t symb) {
   env_t* env = cur_env;
   while (env) {
     value_t* val = env_lookup(env, symb);
@@ -466,12 +535,17 @@ static value_t* eval(value_t* val) {
     case EMPTY: case INT: case LIST: return val;
     case SYMB: return eval(val);
     case FUNC: return apply(val, eval_each(cdr(list)));
-    case ATOM_ADD: return atom_add(eval_each(cdr(list))); break;
-    case ATOM_SUB: return atom_sub(eval_each(cdr(list))); break;
-    case ATOM_MUL: return atom_mul(eval_each(cdr(list))); break;
-    case ATOM_DIV: return atom_div(eval_each(cdr(list))); break;
-    case ATOM_DEF: return atom_def(cdr(list)); break;
-    case ATOM_LAMBDA: return atom_lambda(cdr(list)); break;
+    case PRIM_ADD: return prim_add(eval_each(cdr(list)));
+    case PRIM_SUB: return prim_sub(eval_each(cdr(list)));
+    case PRIM_MUL: return prim_mul(eval_each(cdr(list)));
+    case PRIM_DIV: return prim_div(eval_each(cdr(list)));
+    case PRIM_EQ: case PRIM_GT: case PRIM_LT:
+    case PRIM_LE: case PRIM_GE: case PRIM_NE:
+        return prim_rel(val->t, eval_each(cdr(list)));
+    case PRIM_DEF: return prim_def(cdr(list));
+    case PRIM_LAMBDA: return prim_lambda(cdr(list));
+    case PRIM_IF:  return prim_if(cdr(list));
+    case PRIM_NOT: return prim_not(eval_each(cdr(list)));
     default: assert(false); return NULL;
     }
   } else if (val->t == SYMB) {
@@ -510,6 +584,7 @@ static void print(value_t* val) {
   switch (val->t) {
   case EMPTY: break;
   case INT:   printf("%ld", val->as_int); break;
+  case BOOL:  printf("#%c", val->as_bool ? 't' : 'f'); break;
   case FUNC:  print_func(val); break;
   case LIST:  print_list(val->as_list); break;
   case SYMB:  print_str(val->as_symb); break;
@@ -518,12 +593,20 @@ static void print(value_t* val) {
 }
 
 static inline void init_g_env() {
-  env_add(g_env, STRING("+"), make_atom(ATOM_ADD));
-  env_add(g_env, STRING("-"), make_atom(ATOM_SUB));
-  env_add(g_env, STRING("*"), make_atom(ATOM_MUL));
-  env_add(g_env, STRING("/"), make_atom(ATOM_DIV));
-  env_add(g_env, STRING("define"), make_atom(ATOM_DEF));
-  env_add(g_env, STRING("lambda"), make_atom(ATOM_LAMBDA));
+  env_add(g_env, STRING("+"), make_atom(PRIM_ADD));
+  env_add(g_env, STRING("-"), make_atom(PRIM_SUB));
+  env_add(g_env, STRING("*"), make_atom(PRIM_MUL));
+  env_add(g_env, STRING("/"), make_atom(PRIM_DIV));
+  env_add(g_env, STRING("="), make_atom(PRIM_EQ));
+  env_add(g_env, STRING(">"), make_atom(PRIM_GT));
+  env_add(g_env, STRING("<"), make_atom(PRIM_LT));
+  env_add(g_env, STRING(">="), make_atom(PRIM_GE));
+  env_add(g_env, STRING("<="), make_atom(PRIM_LE));
+  env_add(g_env, STRING("!="), make_atom(PRIM_NE));
+  env_add(g_env, STRING("define"), make_atom(PRIM_DEF));
+  env_add(g_env, STRING("lambda"), make_atom(PRIM_LAMBDA));
+  env_add(g_env, STRING("if"), make_atom(PRIM_IF));
+  env_add(g_env, STRING("not"), make_atom(PRIM_NOT));
 }
 
 static void repl() {
