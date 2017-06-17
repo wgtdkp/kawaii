@@ -1,7 +1,3 @@
-/*
- * Support:
- *  +, -, *, /, lambda, define
- */
 #include <assert.h>
 #include <ctype.h>
 #include <stdarg.h>
