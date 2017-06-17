@@ -198,6 +198,22 @@ static inline uint64_t hash(string_t key) {
   return ret;
 }
 
+static inline env_entry_t* __env_lookup(env_t* env, string_t key) {
+  uint64_t h = hash(key);
+  env_entry_t* entry = env->slots[h % env->size];
+  while (entry) {
+    if (h == entry->key_hash && string_eq(key, entry->key))
+      return entry;
+    entry = entry->next;
+  }
+  return NULL;
+}
+
+static inline value_t* env_lookup(env_t* env, string_t key) {
+  env_entry_t* entry = __env_lookup(env, key);
+  return entry ? entry->val : NULL;
+}
+
 static void env_add(env_t* env, string_t key, value_t* val) {
   if (env->num_entries * 2 >= env->size) {
     // Load factor >= 0.5, rehash
@@ -212,24 +228,18 @@ static void env_add(env_t* env, string_t key, value_t* val) {
     free(env->slots);
     *env = *new_env;
   }
-  // TODO(wgtdkp): if there is already the same key?
-  uint64_t h = hash(key);
-  env_entry_t* slot = env->slots[h % env->size];
-  env_entry_t* entry = alloc_env_entry(h, key, val);
-  entry->next = slot;
-  env->slots[h % env->size] = entry;
-  ++env->num_entries;
-}
 
-static inline value_t* env_lookup(env_t* env, string_t key) {
-  uint64_t h = hash(key);
-  env_entry_t* entry = env->slots[h % env->size];
-  while (entry) {
-    if (h == entry->key_hash && string_eq(key, entry->key))
-      return entry->val;
-    entry = entry->next;
+  env_entry_t* entry = __env_lookup(env, key);
+  if (entry) {
+    entry->val = val;
+  } else {
+    uint64_t h = hash(key);
+    env_entry_t* slot = env->slots[h % env->size];
+    entry = alloc_env_entry(h, key, val);
+    entry->next = slot;
+    env->slots[h % env->size] = entry;
+    ++env->num_entries;
   }
-  return NULL;
 }
 
 static env_t* g_env;
