@@ -156,10 +156,10 @@ typedef struct env {
   struct env* parent;
 } env_t;
 
-static inline env_entry_t* alloc_env_entry(uint64_t h,
+static inline env_entry_t* alloc_env_entry(uint64_t hash,
     string_t key, value_t* val) {
   env_entry_t* ret = malloc(sizeof(env_entry_t));
-  ret->key_hash = h;
+  ret->key_hash = hash;
   ret->key = key;
   ret->val = val;
   ret->next = NULL;
@@ -202,8 +202,9 @@ static inline env_entry_t* __env_lookup(env_t* env, string_t key) {
   uint64_t h = hash(key);
   env_entry_t* entry = env->slots[h % env->size];
   while (entry) {
-    if (h == entry->key_hash && string_eq(key, entry->key))
+    if (h == entry->key_hash && string_eq(key, entry->key)) {
       return entry;
+    }
     entry = entry->next;
   }
   return NULL;
@@ -306,7 +307,9 @@ static inline void read_spaces() {
 static inline void read_comment() {
   int c;
   while ((c = readc()) && c != '\n') {}
-  if (!c) putback();
+  if (!c) {
+    putback();
+  }
 }
 
 static inline string_t read_symb() {
@@ -337,7 +340,9 @@ static inline bool is_number(string_t symb) {
 static value_t* read();
 static list_t* read_list() {
   value_t* val = read();
-  if (!val) return NULL;
+  if (!val) {
+    return NULL;
+  }
   return alloc_list(val, read_list());
 }
 
@@ -350,8 +355,7 @@ static value_t* read() {
   case '(': {
     readc();
     read_spaces();
-    if (tryc(')')) return make_empty();
-    return make_list(read_list());
+    return tryc(')') ? make_empty() : make_list(read_list());
   }
   default: {
     string_t symb = read_symb();
@@ -365,7 +369,9 @@ static inline void bind(string_t symb, value_t* val) {
   env_add(cur_env, symb, val);
 }
 static list_t* eval_each(list_t* list) {
-  if (!list) return NULL;
+  if (!list) {
+    return NULL;
+  }
   value_t* val = eval(car(list));
   return alloc_list(val, eval_each(cdr(list)));
 }
@@ -638,7 +644,6 @@ int main(int argc, const char* argv[]) {
   } else {
     usage();
   }
-
   repl();
   return 0;
 }
